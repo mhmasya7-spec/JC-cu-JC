@@ -1,56 +1,81 @@
 name: Build Android APK
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [ "main" ]
+workflow_dispatch:
+push:
+branches: ["main"]
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
+build:
+runs-on: ubuntu-24.04
 
-      - name: Unzip project
-        run: |
-          ZIP=$(find . -iname '*PlateHunter*.zip' | head -n 1)
-          echo "Found: $ZIP"
-          unzip -q "$ZIP" -d /tmp/proj
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-      - name: Fix JVM target
-        run: |
-          F=/tmp/proj/PlateHunterAndroid_work/app/build.gradle.kts
-          grep -q "VERSION_17" "$F" || cat >> "$F" <<'EOF'
+  - name: Find and unzip project
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          android {
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-          }
-          EOF
+      ZIP=$(find . -maxdepth 2 -type f \
+        -iname '*PlateHunter*.zip' \
+        ! -path './.github/*' \
+        -print -quit)
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+      if [ -z "$ZIP" ]; then
+        echo "::error::No PlateHunter ZIP found in repository root."
+        exit 1
+      fi
 
-      - name: Accept SDK licenses and install packages
-        run: |
-          SDKM=$(find "$ANDROID_HOME" /usr/local/lib/android -name sdkmanager -type f 2>/dev/null | head -n 1)
-          yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" "platforms;android-35" "build-tools;35.0.0"
+      echo "Found archive: $ZIP"
+      unzip -t "$ZIP"
+      mkdir -p /tmp/proj
+      unzip -q "$ZIP" -d /tmp/proj
 
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
+      PROJECT_DIR=$(dirname "$(find /tmp/proj -type f \
+        \( -name settings.gradle.kts -o -name settings.gradle \) \
+        -print -quit)")
 
-      - name: Build debug APK
-        working-directory: /tmp/proj/PlateHunterAndroid_work
-        run: gradle --no-daemon assembleDebug
+      if [ -z "$PROJECT_DIR" ] || [ "$PROJECT_DIR" = "." ]; then
+        echo "::error::Could not find Android Gradle project."
+        exit 1
+      fi
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: PlateHunter-debug-apk
-          path: /tmp/proj/PlateHunterAndroid_work/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+      echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+      echo "Project directory: $PROJECT_DIR"
+
+  - name: Set up Java
+    uses: actions/setup-java@v4
+    with:
+      distribution: temurin
+      java-version: "17"
+
+  - name: Install Android SDK packages
+    run: |
+      set -euo pipefail
+      SDKM=$(find "$ANDROID_HOME" -name sdkmanager -type f -print -quit)
+      if [ -z "$SDKM" ]; then
+        echo "::error::sdkmanager not found"
+        exit 1
+      fi
+      yes | "$SDKM" --licenses >/dev/null || true
+      "$SDKM" "platforms;android-35" "build-tools;35.0.0"
+
+  - name: Set up Gradle
+    uses: gradle/actions/setup-gradle@v4
+    with:
+      gradle-version: "8.9"
+
+  - name: Build debug APK
+    working-directory: .
+    run: |
+      cd "$PROJECT_DIR"
+      gradle --no-daemon assembleDebug
+
+  - name: Upload APK
+    uses: actions/upload-artifact@v4
+    with:
+      name: PlateHunter-debug-apk
+      path: /tmp/proj/**/app/build/outputs/apk/debug/app-debug.apk
+      if-no-files-found: error
